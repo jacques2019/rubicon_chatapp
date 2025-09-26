@@ -2,10 +2,11 @@ package main
 
 import (
 	"bufio"
-	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"os"
+	"sync"
 )
 
 /* Networking constants */
@@ -20,8 +21,64 @@ const (
 type ClientConnection struct {
 	Connection net.Conn
 	Name       string
-	ID         int
 	Ch         chan string
+}
+
+type ClientManager struct {
+	Clients map[int]ClientConnection
+	mutex   sync.RWMutex
+	NextID  int
+}
+
+func (cManager *ClientManager) AddClient(current_conn net.Conn) int {
+	cManager.mutex.Lock()
+	defer cManager.mutex.Unlock()
+
+	id := cManager.NextID
+	cManager.NextID++
+
+	cManager.Clients[id] = ClientConnection{
+		Connection: current_conn,
+		Name:       "",
+		Ch:         make(chan string, 100),
+	}
+
+	return id
+}
+
+func (cManager *ClientManager) RemoveClient(clientID int) {
+	cManager.mutex.Lock()
+	defer cManager.mutex.Unlock()
+
+	if _, ok := cManager.Clients[clientID]; ok {
+		cManager.Clients[clientID].Connection.Close()
+		close(cManager.Clients[clientID].Ch)
+		delete(cManager.Clients, clientID)
+	} else {
+		slog.Warn("Attempted to remove a non-existing client")
+	}
+}
+
+func (cManager *ClientManager) Broadcast(senderID int, message string) {
+	cManager.mutex.Lock()
+	defer cManager.mutex.Unlock()
+
+	for id, client := range cManager.Clients {
+		if id != senderID {
+			client.Ch <- message
+		}
+	}
+
+	slog.Info("Message broadcast", "sender", senderID, "message", message)
+}
+
+func (cManager *ClientManager) getClient(clientID int) (ClientConnection, bool) {
+	cManager.mutex.Lock()
+	defer cManager.mutex.Unlock()
+
+	client, ok := cManager.Clients[clientID]
+
+	return client, ok
 }
 
 func main() {
@@ -33,18 +90,16 @@ func main() {
 
 	/* Bind to the socket and creates a listner with an epoll instance (on linux) */
 	listener, err := net.Listen(TYPE, ADDRESS)
-	defer listener.Close()
-
 	// Being unable to bind is a fatal error and should exit
 	if err != nil {
 		slog.Error("Unable to bind to socket, closing", "Error", err)
 		os.Exit(0)
 	}
 
-	clients := make([]ClientConnection, 0, 3) // Default value of three taken from specificaiton of 3 users
+	defer listener.Close()
 
 	/* Wait for incoming connections and add them to the slice */
-
+	cManager := ClientManager{Clients: make(map[int]ClientConnection), NextID: 0}
 	for {
 		current_conn, err := listener.Accept()
 		if err != nil {
@@ -52,54 +107,61 @@ func main() {
 			os.Exit(0)
 		}
 
-		/* Get the ID of the new client */
-		newID := 0
-		if len(clients) != 0 {
-			newID = clients[len(clients)-1].ID + 1
-		}
-
-		slog.Info("New client connected", "ID", newID)
-
 		// Append a new client to the list and start a worker thread pointing to it
-		clients := append(clients, ClientConnection{Connection: current_conn, Name: "", ID: newID, Ch: make(chan string, 100)})
+		newID := cManager.AddClient(current_conn)
+		slog.Info("New client connected", "ID", newID, "Address", current_conn.LocalAddr())
 
-		go WorkerThread(clients, len(clients)-1)
+		// Launch a worker thread to handle the new connection
+		go WorkerThread(&cManager, newID)
 	}
 }
 
-func WorkerThread(clients []ClientConnection, index int) {
-	client := clients[index]
+func WorkerThread(cManager *ClientManager, clientID int) {
+	// Attempt to fetch the client
+	client, exists := cManager.getClient(clientID)
 
-	defer client.Connection.Close()
+	if !exists {
+		slog.Warn("Tried to fetch client that does not exist", "ID", clientID)
+		return
+	}
 
+	defer func() {
+		slog.Info("Client disconnected and cleaned up", "ID", clientID)
+	}()
 	/* Read data from the socket and load it into the channels of each client
 	*  Should be performant, since net uses epoll under the hood and goroutines are cheap
 	 */
 	go func() {
 		reader := bufio.NewReader(client.Connection)
-
 		for {
 			data, err := reader.ReadString('\n')
-			if err != nil {
+			if err == io.EOF {
+				slog.Info("Client disconnected")
+				cManager.RemoveClient(clientID)
+				break
+			} else if err != nil {
 				slog.Error("Socket read error", "Error", err)
-				close(client.Ch)
+				cManager.RemoveClient(clientID)
+				break
 			}
 
-			// Push data into all of the clients channels but their own
-			for i := 0; i < len(clients)-1; i++ {
-				if i != index {
-					clients[i].Ch <- data
-				}
-			}
+			cManager.Broadcast(clientID, data)
 		}
 	}()
 
 	/* Write data from the channel to the TCP socket */
-	go func() {
-		for {
-			for data := range client.Ch {
-				fmt.Println(data)
-			}
+
+	for {
+		data, ok := <-cManager.Clients[clientID].Ch
+
+		if !ok {
+			break
 		}
-	}()
+
+		_, err := client.Connection.Write([]byte(data))
+		if err != nil {
+			slog.Info("Socket write error")
+			break
+		}
+	}
 }
