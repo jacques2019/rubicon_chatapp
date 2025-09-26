@@ -1,0 +1,23 @@
+{
+  "name": "rubicon-chat-client",
+  "version": "1.0.0",
+  "scripts": {
+    "dev": "parcel public/index.html",
+    "lint": "eslint src/ --ext .js,.jsx",
+    "lint:fix": "eslint src/ --ext .js,.jsx --fix",
+    "format": "prettier --write \"src/**/*.{js,jsx,json,css}\"",
+    "prebuild": "npm run lint"
+  },
+  "keywords": [],
+  "author": "Jacques van Wyk",
+  "license": "ISC",
+  "description": "Rubicon take home chat client",
+  "dependencies": {
+    "@babel/core": "^7.28.4",
+    "@babel/preset-react": "^7.27.1",
+    "parcel": "^2.16.0",
+    "prettier": "^3.6.2",
+    "react": "^19.1.1",
+    "react-dom": "^19.1.1"
+  }
+}

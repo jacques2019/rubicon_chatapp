@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"encoding/json"
 	"io"
 	"log/slog"
 	"net"
@@ -12,7 +13,7 @@ import (
 /* Networking constants */
 const (
 	HOST    = "127.0.0.1"
-	PORT    = "9090"
+	PORT    = "8080"
 	TYPE    = "tcp"
 	ADDRESS = HOST + ":" + PORT
 )
@@ -28,6 +29,11 @@ type ClientManager struct {
 	Clients map[int]ClientConnection
 	mutex   sync.RWMutex
 	NextID  int
+}
+
+type MessageContainer struct {
+	MessageData string `json:"message"`
+	SenderName  string `json:"sender"`
 }
 
 func (cManager *ClientManager) AddClient(current_conn net.Conn) int {
@@ -50,6 +56,7 @@ func (cManager *ClientManager) RemoveClient(clientID int) {
 	cManager.mutex.Lock()
 	defer cManager.mutex.Unlock()
 
+	// If the client exists, close the connection, channel and remove from the map
 	if _, ok := cManager.Clients[clientID]; ok {
 		cManager.Clients[clientID].Connection.Close()
 		close(cManager.Clients[clientID].Ch)
@@ -60,12 +67,32 @@ func (cManager *ClientManager) RemoveClient(clientID int) {
 }
 
 func (cManager *ClientManager) Broadcast(senderID int, message string) {
+	//  Check the client exists
+	client, exists := cManager.getClient(senderID)
+
 	cManager.mutex.Lock()
 	defer cManager.mutex.Unlock()
 
+	if !exists {
+		slog.Info("Attempt to transmit with non existint client", "senderID", senderID)
+		return
+	}
+
+	name := client.Name
+
+	// Client hasnt been onboarded
+	if len(name) < 1 {
+		slog.Warn("Broadcasting with no name")
+	}
+
+	// Package with JSON
+	messageC := MessageContainer{MessageData: message, SenderName: name}
+	data, _ := json.Marshal(messageC)
+
+	// Transmit to all open connections
 	for id, client := range cManager.Clients {
 		if id != senderID {
-			client.Ch <- message
+			client.Ch <- string(data)
 		}
 	}
 
@@ -149,15 +176,19 @@ func WorkerThread(cManager *ClientManager, clientID int) {
 		}
 	}()
 
-	/* Write data from the channel to the TCP socket */
-
+	/* Write data from the channel to the TCP socket
+	*  Outside of a goroutine to keep thread active
+	 */
 	for {
+		// Fetch the data
 		data, ok := <-cManager.Clients[clientID].Ch
 
+		// Break if the channel is closed
 		if !ok {
 			break
 		}
 
+		// Attempt to write to the connection
 		_, err := client.Connection.Write([]byte(data))
 		if err != nil {
 			slog.Info("Socket write error")
