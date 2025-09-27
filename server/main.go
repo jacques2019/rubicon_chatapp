@@ -25,15 +25,23 @@ type ClientConnection struct {
 	Ch         chan string
 }
 
+/* For transmission */
+type MessageContainer struct {
+	MessageData string `json:"message"`
+	SenderName  string `json:"sender"`
+}
+
+/* For receiving */
+type IncomingPacket struct {
+	Type string `json:"Type"`
+	Data string `json:"Data"`
+}
+
+/* Protects map with mutex and keeps track of next index */
 type ClientManager struct {
 	Clients map[int]ClientConnection
 	mutex   sync.RWMutex
 	NextID  int
-}
-
-type MessageContainer struct {
-	MessageData string `json:"message"`
-	SenderName  string `json:"sender"`
 }
 
 func (cManager *ClientManager) AddClient(current_conn net.Conn) int {
@@ -67,7 +75,6 @@ func (cManager *ClientManager) RemoveClient(clientID int) {
 }
 
 func (cManager *ClientManager) Broadcast(senderID int, message string) {
-	//  Check the client exists
 	client, exists := cManager.getClient(senderID)
 
 	cManager.mutex.Lock()
@@ -79,11 +86,6 @@ func (cManager *ClientManager) Broadcast(senderID int, message string) {
 	}
 
 	name := client.Name
-
-	// Client hasnt been onboarded
-	if len(name) < 1 {
-		slog.Warn("Broadcasting with no name")
-	}
 
 	// Package with JSON
 	messageC := MessageContainer{MessageData: message, SenderName: name}
@@ -115,7 +117,7 @@ func main() {
 
 	slog.Info("Server start")
 
-	/* Bind to the socket and creates a listner with an epoll instance (on linux) */
+	// Bind to the socket and creates a listner with an epoll instance (on linux)
 	listener, err := net.Listen(TYPE, ADDRESS)
 	// Being unable to bind is a fatal error and should exit
 	if err != nil {
@@ -134,17 +136,15 @@ func main() {
 			os.Exit(0)
 		}
 
-		// Append a new client to the list and start a worker thread pointing to it
+		// Append a new client to the list and start a worker thread to handle it
 		newID := cManager.AddClient(current_conn)
 		slog.Info("New client connected", "ID", newID, "Address", current_conn.LocalAddr())
 
-		// Launch a worker thread to handle the new connection
 		go WorkerThread(&cManager, newID)
 	}
 }
 
 func WorkerThread(cManager *ClientManager, clientID int) {
-	// Attempt to fetch the client
 	client, exists := cManager.getClient(clientID)
 
 	if !exists {
@@ -152,15 +152,17 @@ func WorkerThread(cManager *ClientManager, clientID int) {
 		return
 	}
 
-	defer func() {
-		slog.Info("Client disconnected and cleaned up", "ID", clientID)
-	}()
+	// Cleanup handled by RemoveClient
+	defer slog.Info("Client disconnected and cleaned up", "ID", clientID)
+
 	/* Read data from the socket and load it into the channels of each client
 	*  Should be performant, since net uses epoll under the hood and goroutines are cheap
 	 */
+	NameReceived := false
 	go func() {
-		reader := bufio.NewReader(client.Connection)
 		for {
+			// Fetch data and checl for closed sockets
+			reader := bufio.NewReader(client.Connection)
 			data, err := reader.ReadString('\n')
 			if err == io.EOF {
 				slog.Info("Client disconnected")
@@ -172,7 +174,31 @@ func WorkerThread(cManager *ClientManager, clientID int) {
 				break
 			}
 
-			cManager.Broadcast(clientID, data)
+			// Parse JSON
+			packet := IncomingPacket{}
+			err = json.Unmarshal([]byte(data), &packet)
+			if err != nil {
+				slog.Warn("Unable to parse JSON", "message", data)
+			}
+
+			// Handle packet
+			switch packet.Type {
+			case "join":
+				client.Name = packet.Data
+				NameReceived = true
+				slog.Info("Client Named", "ID", clientID, "name", client.Name)
+
+			case "message":
+				// Shouldn't be able to broadcast before being named
+				if !NameReceived {
+					slog.Warn("Received a message from client before name", "ID", clientID)
+				} else {
+					cManager.Broadcast(clientID, packet.Data)
+				}
+
+			default:
+				slog.Warn("Unknown message type received from client", "type", packet.Type)
+			}
 		}
 	}()
 
@@ -180,10 +206,8 @@ func WorkerThread(cManager *ClientManager, clientID int) {
 	*  Outside of a goroutine to keep thread active
 	 */
 	for {
-		// Fetch the data
 		data, ok := <-cManager.Clients[clientID].Ch
 
-		// Break if the channel is closed
 		if !ok {
 			break
 		}
