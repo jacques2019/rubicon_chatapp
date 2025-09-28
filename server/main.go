@@ -12,7 +12,7 @@ import (
 
 /* Networking constants */
 const (
-	HOST    = "127.0.0.1"
+	HOST    = "0.0.0.0"
 	PORT    = "8080"
 	ADDRESS = HOST + ":" + PORT
 )
@@ -32,7 +32,8 @@ type ClientConnection struct {
 
 /* For transmission */
 type MessageContainer struct {
-	MessageData string `json:"message"`
+	Type        string `json:"type"`
+	MessageData any    `json:"message"`
 	SenderName  string `json:"sender"`
 }
 
@@ -51,7 +52,6 @@ type ClientManager struct {
 
 func (cManager *ClientManager) AddClient(current_conn *websocket.Conn) int {
 	cManager.mutex.Lock()
-	defer cManager.mutex.Unlock()
 
 	id := cManager.NextID
 	cManager.NextID++
@@ -62,12 +62,13 @@ func (cManager *ClientManager) AddClient(current_conn *websocket.Conn) int {
 		Ch:         make(chan string, 100),
 	}
 
+	cManager.mutex.Unlock()
+
 	return id
 }
 
 func (cManager *ClientManager) RemoveClient(clientID int) {
 	cManager.mutex.Lock()
-	defer cManager.mutex.Unlock()
 
 	// If the client exists, close the connection, channel and remove from the map
 	if _, ok := cManager.Clients[clientID]; ok {
@@ -77,6 +78,10 @@ func (cManager *ClientManager) RemoveClient(clientID int) {
 	} else {
 		slog.Warn("Attempted to remove a non-existing client")
 	}
+
+	cManager.mutex.Unlock()
+
+	cManager.BroadcastUsers()
 }
 
 func (cManager *ClientManager) Broadcast(senderID int, message string) {
@@ -91,17 +96,36 @@ func (cManager *ClientManager) Broadcast(senderID int, message string) {
 	}
 
 	// Package with JSON
-	messageC := MessageContainer{MessageData: message, SenderName: client.Name}
+	messageC := MessageContainer{MessageData: message, SenderName: client.Name, Type: "message"}
 	data, _ := json.Marshal(messageC)
 
 	// Transmit to all open connections
-	for id, client := range cManager.Clients {
-		if id != senderID {
-			client.Ch <- string(data)
-		}
+	for _, client := range cManager.Clients {
+		client.Ch <- string(data)
 	}
 
 	slog.Info("Message broadcast", "sender", senderID, "message", message)
+}
+
+func (cManager *ClientManager) BroadcastUsers() {
+	cManager.mutex.Lock()
+	defer cManager.mutex.Unlock()
+
+	names := make([]string, 0, len(cManager.Clients))
+
+	for i := 0; i < len(cManager.Clients); i++ {
+		names = append(names, cManager.Clients[i].Name)
+	}
+
+	// Package with JSON
+	messageC := MessageContainer{MessageData: names, SenderName: "", Type: "userList"}
+	data, _ := json.Marshal(messageC)
+
+	slog.Info("Broadcasting active users", "message", data, "names", names)
+	// Transmit to all open connections
+	for _, client := range cManager.Clients {
+		client.Ch <- string(data)
+	}
 }
 
 func (cManager *ClientManager) getClient(clientID int) (ClientConnection, bool) {
@@ -194,6 +218,7 @@ func WorkerThread(cManager *ClientManager, clientID int) {
 
 				NameReceived = true
 				slog.Info("Client Named", "ID", clientID, "name", client.Name)
+				cManager.BroadcastUsers()
 
 			case "message":
 				// Shouldn't be able to broadcast before being named
