@@ -110,18 +110,19 @@ func (cManager *ClientManager) BroadcastUsers() {
 	cManager.mutex.Lock()
 	defer cManager.mutex.Unlock()
 
+	// Fetch all the names
 	names := make([]string, 0, len(cManager.Clients))
 
-	for i := 0; i < len(cManager.Clients); i++ {
-		names = append(names, cManager.Clients[i].Name)
+	for key := range cManager.Clients {
+		names = append(names, cManager.Clients[key].Name)
 	}
 
 	// Package with JSON
 	messageC := MessageContainer{MessageData: names, SenderName: "", Type: "userList"}
 	data, _ := json.Marshal(messageC)
 
-	slog.Info("Broadcasting active users", "names", names)
 	// Transmit to all open connections
+	slog.Info("Broadcasting active users", "names", names)
 	for _, client := range cManager.Clients {
 		client.Ch <- string(data)
 	}
