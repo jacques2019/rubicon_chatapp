@@ -12,9 +12,8 @@ import (
 
 /* Networking constants */
 const (
-	HOST    = "0.0.0.0"
-	PORT    = "8080"
-	ADDRESS = HOST + ":" + PORT
+	HOST = "0.0.0.0"
+	PORT = "8080"
 )
 
 var upgrader = websocket.Upgrader{
@@ -121,7 +120,7 @@ func (cManager *ClientManager) BroadcastUsers() {
 	messageC := MessageContainer{MessageData: names, SenderName: "", Type: "userList"}
 	data, _ := json.Marshal(messageC)
 
-	slog.Info("Broadcasting active users", "message", data, "names", names)
+	slog.Info("Broadcasting active users", "names", names)
 	// Transmit to all open connections
 	for _, client := range cManager.Clients {
 		client.Ch <- string(data)
@@ -157,7 +156,17 @@ func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	slog.SetDefault(logger)
 
-	slog.Info("Server start")
+	// Set the host and port
+	host, exists := os.LookupEnv("CHATAPP_HOST")
+	if !exists {
+		host = HOST
+	}
+	port, exists := os.LookupEnv("CHATAPP_PORT")
+	if !exists {
+		port = PORT
+	}
+
+	address := host + ":" + port
 
 	/* Wait for incoming connections and add them to the slice */
 	cManager := ClientManager{Clients: make(map[int]ClientConnection), NextID: 0}
@@ -166,8 +175,8 @@ func main() {
 		handleWebSocket(&cManager, w, r)
 	})
 
-	slog.Info("WebSocket server listening", "address", ADDRESS)
-	err := http.ListenAndServe(ADDRESS, nil)
+	slog.Info("WebSocket server listening", "address", address)
+	err := http.ListenAndServe(address, nil)
 	if err != nil {
 		slog.Error("Unable to start server", "Error", err)
 		os.Exit(0)
