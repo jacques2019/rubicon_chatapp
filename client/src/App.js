@@ -1,7 +1,6 @@
 import React, { useState, useEffect, useRef } from "react";
 import { Send, User, Users } from "lucide-react";
 import { WebSocketChatClient } from "./ws.js";
-// Setup the persistent TCP client
 
 function App() {
     const ip = "127.0.0.1";
@@ -15,7 +14,6 @@ function App() {
     const [hasEnteredName, setHasEnteredName] = useState(false);
     const [isConnected, setIsConnected] = useState(false);
 
-    // Setup the persistent WebSocket client
     const wsClientRef = useRef(null);
 
     // Set up WS connection when user enters name
